@@ -2,7 +2,10 @@ package com.wzt.yolov5;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -18,6 +21,7 @@ import android.graphics.RectF;
 import android.graphics.YuvImage;
 import android.media.ExifInterface;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -48,12 +52,20 @@ import androidx.camera.core.UseCase;
 import androidx.core.app.ActivityCompat;
 import androidx.lifecycle.LifecycleOwner;
 
+import com.facebook.network.connectionclass.ConnectionClassManager;
+import com.facebook.network.connectionclass.ConnectionQuality;
+import com.facebook.network.connectionclass.DeviceBandwidthSampler;
+
+import org.json.JSONArray;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -63,6 +75,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.FormBody;
 import okhttp3.MediaType;
 import okhttp3.MultipartBody;
 import okhttp3.OkHttpClient;
@@ -131,7 +144,11 @@ public class MainActivity extends AppCompatActivity {
 
     FFmpegMediaMetadataRetriever mmr;
 
-    private String isInit="False";
+    private int peopleNum=0;
+    private BatteryReceiver batteryReceiver = null;
+    private int batteryRemainingLevel=0;
+    private ConnectionChangedListener connectionChangedListener = new ConnectionChangedListener();
+    private double bandwidthQuality=0;
 
     @RequiresApi(api = Build.VERSION_CODES.O)
     @Override
@@ -480,28 +497,35 @@ public class MainActivity extends AppCompatActivity {
     }
 
     protected Bitmap drawBoxRects(Bitmap mutableBitmap, Box[] results) {
+        peopleNum=0;
         if (results == null || results.length <= 0) {
             return mutableBitmap;
         }
         Canvas canvas = new Canvas(mutableBitmap);
+//        Log.e(MainActivity.class.getSimpleName(),"ImageWidth="+mutableBitmap.getWidth());
+//        Log.e(MainActivity.class.getSimpleName(),"ImageHeight="+mutableBitmap.getHeight());
         final Paint boxPaint = new Paint();
         boxPaint.setAlpha(200);
         boxPaint.setStyle(Paint.Style.STROKE);
         boxPaint.setStrokeWidth(4 * mutableBitmap.getWidth() / 800.0f);
         boxPaint.setTextSize(30 * mutableBitmap.getWidth() / 800.0f);
         for (Box box : results) {
+            if (box.label==0){
+                peopleNum++;
+            }
             boxPaint.setColor(box.getColor());
             boxPaint.setStyle(Paint.Style.FILL);
             canvas.drawText(box.getLabel() + String.format(Locale.CHINESE, " %.3f", box.getScore()), box.x0 + 3, box.y0 + 30 * mutableBitmap.getWidth() / 1000.0f, boxPaint);
             boxPaint.setStyle(Paint.Style.STROKE);
             canvas.drawRect(box.getRect(), boxPaint);
+//            Log.e(MainActivity.class.getSimpleName(),"WidthPercent="+box.x0*1.0f/mutableBitmap.getWidth());
+//            Log.e(MainActivity.class.getSimpleName(),"HeightPercent="+box.y0*1.0f/mutableBitmap.getHeight());
         }
         return mutableBitmap;
     }
 
     protected Bitmap detectAndDraw(Bitmap image) {
         Box[] result = null;
-        float[] enetMasks = null;
         if (USE_MODEL == YOLOV5S) {
             result = YOLOv5.detect(image, threshold, nms_threshold);
         } else if (USE_MODEL == YOLOV4_TINY || USE_MODEL == MOBILENETV2_YOLOV3_NANO || USE_MODEL == YOLO_FASTEST_XL) {
@@ -514,6 +538,14 @@ public class MainActivity extends AppCompatActivity {
         if (USE_MODEL == YOLOV5S || USE_MODEL == YOLOV4_TINY || USE_MODEL == MOBILENETV2_YOLOV3_NANO || USE_MODEL == YOLO_FASTEST_XL) {
             mutableBitmap = drawBoxRects(image, result);
         }
+//        for(int i=0;i<result.length;i++){
+//            Log.e(TAG,"x0="+result[i].x0);
+//            Log.e(TAG,"y0="+result[i].y0);
+//            Log.e(TAG,"x1="+result[i].x1);
+//            Log.e(TAG,"y1="+result[i].y1);
+//            Log.e(TAG,"score="+result[i].score);
+//            Log.e(TAG,"label="+result[i].label);
+//        }
         return mutableBitmap;
     }
 
@@ -544,6 +576,18 @@ public class MainActivity extends AppCompatActivity {
         }
         CameraX.unbindAll();
         super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        ConnectionClassManager.getInstance().register(connectionChangedListener);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        ConnectionClassManager.getInstance().remove(connectionChangedListener);
     }
 
     @Override
@@ -598,19 +642,22 @@ public class MainActivity extends AppCompatActivity {
                 width = image.getWidth();
                 height = image.getHeight();
 
-//                mutableBitmap = detectAndDraw(mutableBitmap);
-                Log.e(TAG,"Detect on ubuntu!!!!!!!!!!!");
-                try {
-                    detectOnUbuntu(mutableBitmap);
-                } catch (FileNotFoundException e) {
-                    e.printStackTrace();
-                }
+//                Log.e(TAG,"Detect on ubuntu!!!!!!!!!!!");
+//                try {
+//                    detectOnUbuntu(mutableBitmap);
+//                } catch (FileNotFoundException e) {
+//                    e.printStackTrace();
+//                }
+
+                mutableBitmap = detectAndDraw(mutableBitmap);
 
                 final long dur = System.currentTimeMillis() - start;
+                Log.e(TAG,"Detect end!!!!!!!!!!!");
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         String modelName = getModelName();
+                        Log.e(TAG,"Show result!!!!!!!!!!!");
                         resultImageView.setImageBitmap(mutableBitmap);
                         tvInfo.setText(String.format(Locale.CHINESE, "%s\nSize: %dx%d\nTime: %.3f s\nFPS: %.3f",
                                 modelName, height, width, dur / 1000.0, 1000.0f / dur));
@@ -672,7 +719,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         detectVideo.set(true);
-        Toast.makeText(MainActivity.this, "FPS is not accurate!", Toast.LENGTH_SHORT).show();
+//        Toast.makeText(MainActivity.this, "FPS is not accurate!", Toast.LENGTH_SHORT).show();
         sbVideo.setVisibility(View.VISIBLE);
         sbVideoSpeed.setVisibility(View.VISIBLE);
         CameraX.unbindAll();
@@ -696,6 +743,7 @@ public class MainActivity extends AppCompatActivity {
                 sbVideo.setMax(duration * 1000);
                 float frameDis = 1.0f / fps * 1000 * 1000 * videoSpeed;
                 videoCurFrameLoc = 0;
+                int count = 0;
                 while (detectVideo.get() && (videoCurFrameLoc) < (duration * 1000)) {
                     videoCurFrameLoc = (long) (videoCurFrameLoc + frameDis);
                     sbVideo.setProgress((int) videoCurFrameLoc);
@@ -708,9 +756,50 @@ public class MainActivity extends AppCompatActivity {
                     width = b.getWidth();
                     height = b.getHeight();
                     final Bitmap bitmap = Bitmap.createBitmap(b, 0, 0, width, height, matrix, false);
-                    detectOnAndroid(bitmap);
-                    //detectOnUbuntu(bitmap);
-                    showResultOnUI();
+
+//                    Log.e(TAG,"videoCurFrameLoc = " + videoCurFrameLoc);
+
+//                    if(count % 2 == 0){
+//                        Log.e(TAG,"Detect on android begin!!!!!!!!!!!");
+//                        detectOnAndroid(bitmap);
+//                        showResultOnUI();
+//                        Log.e(TAG,"Detect on android end!!!!!!!!!!!");
+//                        count++;
+//                    }else{
+//                        try {
+//                            Log.e(TAG,"Detect on ubuntu begin!!!!!!!!!!!");
+//                            detectOnUbuntu(bitmap);
+//                            Log.e(TAG,"Detect on ubuntu end!!!!!!!!!!!");
+//                        } catch (FileNotFoundException e) {
+//                            e.printStackTrace();
+//                        }
+//                        count++;
+//                    }
+
+//                    if((videoCurFrameLoc) < (duration * 1000) / 2){
+//                        Log.e(TAG,"Detect on android begin!!!!!!!!!!!");
+//                        detectOnAndroid(bitmap);
+//                        showResultOnUI();
+//                        Log.e(TAG,"Detect on android end!!!!!!!!!!!");
+//                    }else{
+//                        try {
+//                            Log.e(TAG,"Detect on ubuntu begin!!!!!!!!!!!");
+//                            detectOnUbuntu(bitmap);
+//                            Log.e(TAG,"Detect on ubuntu end!!!!!!!!!!!");
+//                        } catch (FileNotFoundException e) {
+//                            e.printStackTrace();
+//                        }
+//                    }
+
+                    try {
+                        Log.e(TAG,"调用detectOnUbuntu方法");
+                        detectOnUbuntu(bitmap);
+                        showResultOnUI();
+                        Log.e(TAG,"detectOnUbuntu方法执行结束");
+                    } catch (FileNotFoundException e) {
+                        e.printStackTrace();
+                    }
+
                     frameDis = 1.0f / fps * 1000 * 1000 * videoSpeed;
                 }
                 mmr.release();
@@ -732,12 +821,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void detectOnAndroid(Bitmap bitmap){
-        startTime = System.currentTimeMillis();
         detectAndDraw(bitmap.copy(Bitmap.Config.ARGB_8888, true));
     }
 
     public void detectOnUbuntu(Bitmap bitmap) throws FileNotFoundException {
-        startTime = System.currentTimeMillis();
+        Bitmap tempBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
         File file = new File(Environment.getExternalStorageDirectory(), System.currentTimeMillis()+".jpg");
         FileOutputStream fileOutStream = new FileOutputStream(file);
         try {
@@ -759,90 +847,106 @@ public class MainActivity extends AppCompatActivity {
         RequestBody body = RequestBody.create(MediaType.parse("image/*"), file);
         String filename = file.getName();
         requestBody.addFormDataPart("fileImage", filename, body);
-        requestBody.addFormDataPart("type",isInit);
-        isInit="True";
 
-        Request request = new Request.Builder().url("http://192.168.1.105:8000/objectdetect/").post(requestBody.build()).tag(this).build();
+        Log.e(TAG, "向服务器端发送请求");
+        Request request = new Request.Builder().url("http://81.70.252.155:8888/objectdetect/").post(requestBody.build()).tag(this).build();
         // readTimeout("请求超时时间" , 时间单位);
-        client.newBuilder().readTimeout(5000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
+        client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
                 Log.e(TAG ,"onFailure");
             }
             @Override
             public void onResponse(Call call, Response response) throws IOException {
-                if (response.isSuccessful()) {
-                    String str = response.body().string();
-                    Log.e(TAG, response.message() + " , body " + str);
-                } else {
-                    Log.e(TAG ,response.message() + " error : body " + response.body().string());
+//                if (response.isSuccessful()) {
+//                    InputStream is = response.body().byteStream();
+//                    mutableBitmap = BitmapFactory.decodeStream(is);
+////                    String str = response.body().string();
+//                    Log.e(TAG, response.message());
+//                    showResultOnUI();
+//                } else {
+//                    Log.e(TAG ,response.message() + " error : body " + response.body().string());
+//                }
+                Log.e(TAG, "服务器端返回请求");
+                String str = response.body().string();
+//                Log.e(TAG, str);
+                str = str.substring(2, str.length() - 2);
+                String[] lines = str.split("], \\[");
+                int len = lines.length;
+                Box[] result = new Box[len];
+                for (int i = 0; i < len; i++){
+//                    Log.e(TAG, lines[i]);
+                    String[] temp = lines[i].split(", ");
+                    float x0 = Float.parseFloat(temp[1]) * tempBitmap.getWidth();
+                    float y0 = Float.parseFloat(temp[2]) * tempBitmap.getHeight();
+                    float x1 = Float.parseFloat(temp[3]) * tempBitmap.getWidth();
+                    float y1 = Float.parseFloat(temp[4]) * tempBitmap.getHeight();
+                    int label = Integer.parseInt(temp[0]);
+                    float score = Float.parseFloat(temp[5]);
+                    Box box = new Box(x0, y0, x1, y1, label, score);
+                    result[i] = box;
                 }
+                mutableBitmap = drawBoxRects(bitmap.copy(Bitmap.Config.ARGB_8888, true), result);
             }
         });
     }
 
-    private void uploadImage(File file) {
-        new Thread(new Runnable() {
+    public void getBatteryLevel(){
+        Log.e(TAG, "开始获取当前手机电量水平");
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        registerReceiver(batteryReceiver, filter);
+        unregisterReceiver(batteryReceiver);
+        Log.e(TAG, "获取当前手机电量水平结束");
+    }
+
+    public void getBandWidthState(){
+        OkHttpClient client = new OkHttpClient();
+        Request request = new Request.Builder().url("http://81.70.252.155:8888/trainDQN/").tag(this).build();
+        Log.e(TAG, "开始获取当前网络带宽");
+        DeviceBandwidthSampler.getInstance().startSampling();
+        client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
             @Override
-            public void run() {
-                OkHttpClient client = new OkHttpClient();
-                MultipartBody.Builder requestBody = new MultipartBody.Builder().setType(MultipartBody.FORM);
-                if (file != null) {
-                    RequestBody body = RequestBody.create(MediaType.parse("image/*"),file);
-                    String filename = file.getName();
-                    // 参数分别为，请求的key，文件名称，requestBody
-                    requestBody.addFormDataPart("fileImage", filename, body);
-                    requestBody.addFormDataPart("type",isInit);
-                    isInit="True";
-                }
-
-                Request request = new Request.Builder()
-                        .url("http://×××.×××.×××.×××:8000/objectdetect/")   //此处是服务器ip
-                        .post(requestBody.build())
-                        .tag(this).build();
-
-                try {
-                    Response response = client.newCall(request).execute();
-                    //请求处理
-                    String rd = response.body().string();
-                    Log.d("tag","get response :" + rd);
-
-                    if(rd.isEmpty()){
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                //Toast.makeText(Video.this,"空的",Toast.LENGTH_LONG).show();
-                            }
-                        });
-                    }else{
-                        if(rd.equals("failure")){
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    //Toast.makeText(Video.this,"上传失败",Toast.LENGTH_LONG).show();
-                                }
-                            });
-                        }else{
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    //Toast.makeText(Video.this,"上传成功",Toast.LENGTH_LONG).show();
-                                }
-                            });
-                        }
-                    }
-
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            //Toast.makeText(Video.this,"异常",Toast.LENGTH_LONG).show();
-                        }
-                    });
-                }
+            public void onFailure(Call call, IOException e) {
+                DeviceBandwidthSampler.getInstance().stopSampling();
+                Log.e(TAG ,"onFailure：获取当前网络带宽结束");
             }
-        }).start();
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                DeviceBandwidthSampler.getInstance().stopSampling();
+                Log.e(TAG ,"onResponse："+response.body().string()+"，获取当前网络带宽结束");
+                ConnectionQuality connectionQuality = ConnectionClassManager.getInstance().getCurrentBandwidthQuality();
+                bandwidthQuality = ConnectionClassManager.getInstance().getDownloadKBitsPerSecond();
+                Log.e("TAG","网络带宽结果如下：connectionQuality:"+connectionQuality+" downloadKBitsPerSecond:"+ bandwidthQuality +" kb/s");
+            }
+        });
+    }
+
+    public void sendState(){
+        getBatteryLevel();
+        getBandWidthState();
+        Log.e(TAG, "PeopleNum="+peopleNum);
+        Log.e(TAG, "BatteryRemainingLevel="+batteryRemainingLevel);
+        Log.e(TAG, "BandwidthQuality="+bandwidthQuality);
+        OkHttpClient client = new OkHttpClient();
+        FormBody.Builder formBody = new FormBody.Builder();
+        formBody.add("PeopleNum",peopleNum+"");
+        formBody.add("BatteryRemainingLevel",batteryRemainingLevel+"");
+        formBody.add("BandwidthQuality",bandwidthQuality+"");
+        Log.e(TAG, "强化学习：向服务器端发送状态");
+        Request request = new Request.Builder().url("http://81.70.252.155:8888/trainDQN/").post(formBody.build()).tag(this).build();
+        // readTimeout("请求超时时间" , 时间单位);
+        client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                Log.e(TAG ,"onFailure");
+            }
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                Log.e(TAG, "强化学习：服务器端返回请求");
+                String str = response.body().string();
+                Log.e(TAG, str);
+            }
+        });
     }
 
     public Bitmap getPicture(Uri selectedImage) {
@@ -902,6 +1006,27 @@ public class MainActivity extends AppCompatActivity {
             bm.recycle();
         }
         return returnBm;
+    }
+
+    //以内部类的形式定义一个监听电池电量变化的广播接收器
+    private class BatteryReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            // 获得当前电量
+            int current = intent.getExtras().getInt("level");
+            // 获得总电量
+            int total = intent.getExtras().getInt("scale");
+            batteryRemainingLevel = current / total;
+            Log.e(TAG, "当前手机总电量为："+batteryRemainingLevel);
+        }
+    }
+
+    private class ConnectionChangedListener implements ConnectionClassManager.ConnectionClassStateChangeListener {
+
+        @Override
+        public void onBandwidthStateChange(com.facebook.network.connectionclass.ConnectionQuality bandwidthState) {
+            Log.e(TAG, "网络带宽更改为："+bandwidthState.toString());
+        }
     }
 
 }
