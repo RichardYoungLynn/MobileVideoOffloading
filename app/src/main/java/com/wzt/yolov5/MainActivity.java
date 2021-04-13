@@ -55,8 +55,11 @@ import androidx.lifecycle.LifecycleOwner;
 import com.facebook.network.connectionclass.ConnectionClassManager;
 import com.facebook.network.connectionclass.ConnectionQuality;
 import com.facebook.network.connectionclass.DeviceBandwidthSampler;
+import com.google.gson.JsonArray;
 
 import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -144,11 +147,20 @@ public class MainActivity extends AppCompatActivity {
 
     FFmpegMediaMetadataRetriever mmr;
 
-    private int peopleNum=0;
+    private int localPeopleNum=0;
+    private int serverPeopleNum=0;
+    private Boolean registered = false;
     private BatteryReceiver batteryReceiver = null;
-    private int batteryRemainingLevel=0;
+    private double batteryRemainingLevel=0;
     private ConnectionChangedListener connectionChangedListener = new ConnectionChangedListener();
     private double bandwidthQuality=0;
+    private Boolean getBandWidthStateEnd=false;
+    private Boolean detectOnUbuntuOneTime=false;
+    private double localPeopleConfidenceSum=0;
+    private double serverPeopleConfidenceSum=0;
+    private double localProcessTime=0;
+    private double serverProcessAndTransmissionTime=0;
+    private ArrayList<String> contents = new ArrayList<String>();
 
     @RequiresApi(api = Build.VERSION_CODES.O)
     @Override
@@ -497,7 +509,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     protected Bitmap drawBoxRects(Bitmap mutableBitmap, Box[] results) {
-        peopleNum=0;
+        localPeopleNum=0;
+        localPeopleConfidenceSum=0;
         if (results == null || results.length <= 0) {
             return mutableBitmap;
         }
@@ -511,7 +524,8 @@ public class MainActivity extends AppCompatActivity {
         boxPaint.setTextSize(30 * mutableBitmap.getWidth() / 800.0f);
         for (Box box : results) {
             if (box.label==0){
-                peopleNum++;
+                localPeopleNum++;
+                localPeopleConfidenceSum+=box.getScore();
             }
             boxPaint.setColor(box.getColor());
             boxPaint.setStyle(Paint.Style.FILL);
@@ -525,12 +539,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     protected Bitmap detectAndDraw(Bitmap image) {
+        long start=System.currentTimeMillis();
         Box[] result = null;
         if (USE_MODEL == YOLOV5S) {
             result = YOLOv5.detect(image, threshold, nms_threshold);
         } else if (USE_MODEL == YOLOV4_TINY || USE_MODEL == MOBILENETV2_YOLOV3_NANO || USE_MODEL == YOLO_FASTEST_XL) {
             result = YOLOv4.detect(image, threshold, nms_threshold);
         }
+        localProcessTime=(System.currentTimeMillis()-start)/1000.0;
         if (result == null) {
             detectCamera.set(false);
             return image;
@@ -591,6 +607,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onStop() {
+        if (registered){
+            unregisterReceiver(batteryReceiver);
+        }
+        super.onStop();
+    }
+
+    @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         for (int result : grantResults) {
@@ -648,21 +672,34 @@ public class MainActivity extends AppCompatActivity {
 //                } catch (FileNotFoundException e) {
 //                    e.printStackTrace();
 //                }
+//                Log.e(TAG,"Detect end!!!!!!!!!!!");
 
-                mutableBitmap = detectAndDraw(mutableBitmap);
+                Log.e(TAG,"调用detectOnAndroid方法");
+                getBatteryLevel();
+                getBandWidthState();
+                detectOnAndroid(mutableBitmap);
+                Log.e(TAG, "PeopleNum="+localPeopleNum);
+                Log.e(TAG, "BatteryRemainingLevel="+batteryRemainingLevel);
+                Log.e(TAG, "BandwidthQuality="+bandwidthQuality);
+                Log.e(TAG, "LocalPeopleConfidenceSum="+localPeopleConfidenceSum);
+                Log.e(TAG, "LocalProcessTime="+localProcessTime);
+                showResultOnUI();
+                Log.e(TAG,"detectOnAndroid方法执行结束");
 
-                final long dur = System.currentTimeMillis() - start;
-                Log.e(TAG,"Detect end!!!!!!!!!!!");
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        String modelName = getModelName();
-                        Log.e(TAG,"Show result!!!!!!!!!!!");
-                        resultImageView.setImageBitmap(mutableBitmap);
-                        tvInfo.setText(String.format(Locale.CHINESE, "%s\nSize: %dx%d\nTime: %.3f s\nFPS: %.3f",
-                                modelName, height, width, dur / 1000.0, 1000.0f / dur));
-                    }
-                });
+//                mutableBitmap = detectAndDraw(mutableBitmap);
+//                sendState();
+//                final long dur = System.currentTimeMillis() - start;
+//                Log.e(TAG,"Detect end!!!!!!!!!!!");
+//                runOnUiThread(new Runnable() {
+//                    @Override
+//                    public void run() {
+//                        String modelName = getModelName();
+////                        Log.e(TAG,"Show result!!!!!!!!!!!");
+//                        resultImageView.setImageBitmap(mutableBitmap);
+//                        tvInfo.setText(String.format(Locale.CHINESE, "%s\nSize: %dx%d\nTime: %.3f s\nFPS: %.3f",
+//                                modelName, height, width, dur / 1000.0, 1000.0f / dur));
+//                    }
+//                });
             }
         }, "photo detect");
         thread.start();
@@ -674,7 +711,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         try {
-            detectOnVideo(getExternalStorageDirectory() + "/DCIM/Camera/driving.mp4");
+            detectOnVideo(getExternalStorageDirectory() + "/DCIM/Camera/footage1.mp4");
 
 //            原方法
 //            Uri uri = data.getData();
@@ -791,18 +828,49 @@ public class MainActivity extends AppCompatActivity {
 //                        }
 //                    }
 
+//                    try {
+//                        Log.e(TAG,"调用detectOnUbuntu方法");
+//                        detectOnUbuntu(bitmap);
+//                        showResultOnUI();
+//                        Log.e(TAG,"detectOnUbuntu方法执行结束");
+//                    } catch (FileNotFoundException e) {
+//                        e.printStackTrace();
+//                    }
+
+//                    Log.e(TAG,"调用detectOnAndroid方法");
+//                    getBatteryLevel();
+//                    getBandWidthStateEnd=false;
+//                    getBandWidthState();
+//                    while(!getBandWidthStateEnd){}
+//                    detectOnAndroid(bitmap);
+//                    Log.e(TAG, "PeopleNum="+peopleNum);
+//                    Log.e(TAG, "BatteryRemainingLevel="+batteryRemainingLevel);
+//                    Log.e(TAG, "BandwidthQuality="+bandwidthQuality);
+//                    Log.e(TAG, "LocalPeopleConfidenceSum="+localPeopleConfidenceSum);
+//                    Log.e(TAG, "LocalProcessTime="+localProcessTime);
+//                    String content=peopleNum+" "+batteryRemainingLevel+" "+bandwidthQuality+" "+localPeopleConfidenceSum+" "+localProcessTime;
+//                    contents.add(content);
+//                    showResultOnUI();
+//                    Log.e(TAG,"detectOnAndroid方法执行结束");
+
+                    detectOnUbuntuOneTime=false;
+                    Log.e(TAG,"调用detectOnUbuntu方法");
                     try {
-                        Log.e(TAG,"调用detectOnUbuntu方法");
                         detectOnUbuntu(bitmap);
-                        showResultOnUI();
-                        Log.e(TAG,"detectOnUbuntu方法执行结束");
                     } catch (FileNotFoundException e) {
                         e.printStackTrace();
                     }
+                    while(!detectOnUbuntuOneTime){}
+                    String content=serverPeopleNum+" "+serverPeopleConfidenceSum+" "+serverProcessAndTransmissionTime;
+                    contents.add(content);
+                    Log.e(TAG,"detectOnUbuntu方法执行结束");
 
                     frameDis = 1.0f / fps * 1000 * 1000 * videoSpeed;
                 }
                 mmr.release();
+                Log.e(TAG, "开始写入文件");
+                FileOperation.initData(contents);
+                Log.e(TAG, "结束写入文件");
                 if (detectVideo.get()) {
                     runOnUiThread(new Runnable() {
                         @Override
@@ -849,8 +917,8 @@ public class MainActivity extends AppCompatActivity {
         requestBody.addFormDataPart("fileImage", filename, body);
 
         Log.e(TAG, "向服务器端发送请求");
+        long start = System.currentTimeMillis();
         Request request = new Request.Builder().url("http://81.70.252.155:8888/objectdetect/").post(requestBody.build()).tag(this).build();
-        // readTimeout("请求超时时间" , 时间单位);
         client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
@@ -867,26 +935,60 @@ public class MainActivity extends AppCompatActivity {
 //                } else {
 //                    Log.e(TAG ,response.message() + " error : body " + response.body().string());
 //                }
-                Log.e(TAG, "服务器端返回请求");
+                long end=System.currentTimeMillis();
+                serverProcessAndTransmissionTime=(end-start)/1000.0;
+                Log.e(TAG, "服务器端处理时间+传输时间为："+serverProcessAndTransmissionTime);
                 String str = response.body().string();
 //                Log.e(TAG, str);
-                str = str.substring(2, str.length() - 2);
-                String[] lines = str.split("], \\[");
-                int len = lines.length;
-                Box[] result = new Box[len];
-                for (int i = 0; i < len; i++){
-//                    Log.e(TAG, lines[i]);
-                    String[] temp = lines[i].split(", ");
-                    float x0 = Float.parseFloat(temp[1]) * tempBitmap.getWidth();
-                    float y0 = Float.parseFloat(temp[2]) * tempBitmap.getHeight();
-                    float x1 = Float.parseFloat(temp[3]) * tempBitmap.getWidth();
-                    float y1 = Float.parseFloat(temp[4]) * tempBitmap.getHeight();
-                    int label = Integer.parseInt(temp[0]);
-                    float score = Float.parseFloat(temp[5]);
-                    Box box = new Box(x0, y0, x1, y1, label, score);
-                    result[i] = box;
+                JSONArray jsonArray = new JSONArray();
+                try {
+                    JSONObject jsonObject=new JSONObject(str);
+                    jsonArray=jsonObject.getJSONArray("boxes");
+                    serverPeopleConfidenceSum=jsonObject.getDouble("ServerPeopleConfidenceSum");
+                    serverPeopleNum=jsonObject.getInt("ServerPeopleNum");
+                    detectOnUbuntuOneTime=true;
+                } catch (JSONException e) {
+                    e.printStackTrace();
                 }
-                mutableBitmap = drawBoxRects(bitmap.copy(Bitmap.Config.ARGB_8888, true), result);
+//                Log.e(TAG, "start="+start);
+//                Log.e(TAG, "end="+end);
+//                Box[] result = new Box[jsonArray.length()];
+//                for (int i=0;i<jsonArray.length();i++){
+//                    try {
+//                        JSONArray temp=jsonArray.getJSONArray(i);
+//                        float x0 = (float) (temp.getDouble(1) * tempBitmap.getWidth());
+//                        float y0 = (float) (temp.getDouble(2) * tempBitmap.getHeight());
+//                        float x1 = (float) (temp.getDouble(3) * tempBitmap.getWidth());
+//                        float y1 = (float) (temp.getDouble(4) * tempBitmap.getHeight());
+//                        int label = temp.getInt(0);
+//                        float score = (float) (temp.getDouble(5));
+//                        Box box = new Box(x0, y0, x1, y1, label, score);
+//                        result[i] = box;
+//                    } catch (JSONException e) {
+//                        e.printStackTrace();
+//                    }
+//                }
+//                mutableBitmap = drawBoxRects(bitmap.copy(Bitmap.Config.ARGB_8888, true), result);
+//                showResultOnUI();
+
+//                str = str.substring(2, str.length() - 2);
+//                String[] lines = str.split("], \\[");
+//                int len = lines.length;
+//                Box[] result = new Box[len];
+//                for (int i = 0; i < len; i++){
+////                    Log.e(TAG, lines[i]);
+//                    String[] temp = lines[i].split(", ");
+//                    float x0 = Float.parseFloat(temp[1]) * tempBitmap.getWidth();
+//                    float y0 = Float.parseFloat(temp[2]) * tempBitmap.getHeight();
+//                    float x1 = Float.parseFloat(temp[3]) * tempBitmap.getWidth();
+//                    float y1 = Float.parseFloat(temp[4]) * tempBitmap.getHeight();
+//                    int label = Integer.parseInt(temp[0]);
+//                    float score = Float.parseFloat(temp[5]);
+//                    Box box = new Box(x0, y0, x1, y1, label, score);
+//                    result[i] = box;
+//                }
+//                mutableBitmap = drawBoxRects(bitmap.copy(Bitmap.Config.ARGB_8888, true), result);
+//                showResultOnUI();
             }
         });
     }
@@ -894,14 +996,15 @@ public class MainActivity extends AppCompatActivity {
     public void getBatteryLevel(){
         Log.e(TAG, "开始获取当前手机电量水平");
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        batteryReceiver = new BatteryReceiver();
         registerReceiver(batteryReceiver, filter);
-        unregisterReceiver(batteryReceiver);
+        registered=true;
         Log.e(TAG, "获取当前手机电量水平结束");
     }
 
     public void getBandWidthState(){
         OkHttpClient client = new OkHttpClient();
-        Request request = new Request.Builder().url("http://81.70.252.155:8888/trainDQN/").tag(this).build();
+        Request request = new Request.Builder().url("http://81.70.252.155:8888/testBandwidthState/").tag(this).build();
         Log.e(TAG, "开始获取当前网络带宽");
         DeviceBandwidthSampler.getInstance().startSampling();
         client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
@@ -917,6 +1020,7 @@ public class MainActivity extends AppCompatActivity {
                 ConnectionQuality connectionQuality = ConnectionClassManager.getInstance().getCurrentBandwidthQuality();
                 bandwidthQuality = ConnectionClassManager.getInstance().getDownloadKBitsPerSecond();
                 Log.e("TAG","网络带宽结果如下：connectionQuality:"+connectionQuality+" downloadKBitsPerSecond:"+ bandwidthQuality +" kb/s");
+                getBandWidthStateEnd=true;
             }
         });
     }
@@ -924,17 +1028,23 @@ public class MainActivity extends AppCompatActivity {
     public void sendState(){
         getBatteryLevel();
         getBandWidthState();
-        Log.e(TAG, "PeopleNum="+peopleNum);
+        while(!getBandWidthStateEnd){}
+        Log.e(TAG, "PeopleNum="+localPeopleNum);
         Log.e(TAG, "BatteryRemainingLevel="+batteryRemainingLevel);
         Log.e(TAG, "BandwidthQuality="+bandwidthQuality);
+        Log.e(TAG, "LocalPeopleConfidenceSum="+localPeopleConfidenceSum);
+        Log.e(TAG, "LocalProcessTime="+localProcessTime);
+        String content=localPeopleNum+" "+batteryRemainingLevel+" "+bandwidthQuality+" "+localPeopleConfidenceSum+" "+localProcessTime;
+        contents.add(content);
         OkHttpClient client = new OkHttpClient();
         FormBody.Builder formBody = new FormBody.Builder();
-        formBody.add("PeopleNum",peopleNum+"");
+        formBody.add("PeopleNum",localPeopleNum+"");
         formBody.add("BatteryRemainingLevel",batteryRemainingLevel+"");
         formBody.add("BandwidthQuality",bandwidthQuality+"");
+        formBody.add("LocalPeopleConfidenceSum",localPeopleConfidenceSum+"");
+        formBody.add("LocalProcessTime",localProcessTime+"");
         Log.e(TAG, "强化学习：向服务器端发送状态");
         Request request = new Request.Builder().url("http://81.70.252.155:8888/trainDQN/").post(formBody.build()).tag(this).build();
-        // readTimeout("请求超时时间" , 时间单位);
         client.newBuilder().readTimeout(50000, TimeUnit.MILLISECONDS).build().newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
@@ -1008,21 +1118,19 @@ public class MainActivity extends AppCompatActivity {
         return returnBm;
     }
 
-    //以内部类的形式定义一个监听电池电量变化的广播接收器
     private class BatteryReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
             // 获得当前电量
-            int current = intent.getExtras().getInt("level");
+            double current = intent.getExtras().getInt("level");
             // 获得总电量
-            int total = intent.getExtras().getInt("scale");
-            batteryRemainingLevel = current / total;
+            double total = intent.getExtras().getInt("scale");
+            batteryRemainingLevel = current*1.0 / total;
             Log.e(TAG, "当前手机总电量为："+batteryRemainingLevel);
         }
     }
 
     private class ConnectionChangedListener implements ConnectionClassManager.ConnectionClassStateChangeListener {
-
         @Override
         public void onBandwidthStateChange(com.facebook.network.connectionclass.ConnectionQuality bandwidthState) {
             Log.e(TAG, "网络带宽更改为："+bandwidthState.toString());

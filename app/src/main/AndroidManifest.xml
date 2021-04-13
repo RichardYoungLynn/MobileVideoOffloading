@@ -26,9 +26,6 @@
         <activity
             android:name=".MainActivity"
             android:theme="@style/AppNoTitleTheme" />
-        <activity
-            android:name=".ocr.OcrActivity"
-            android:theme="@style/AppNoTitleTheme" />
     </application>
 
 </manifest>
